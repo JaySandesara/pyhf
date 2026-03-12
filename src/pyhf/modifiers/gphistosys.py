@@ -84,12 +84,13 @@ def required_parset(sample_data, modifier_data):
     """Return parameter-set specification for one gphistosys modifier."""
     d = len(modifier_data['nodes'][0])
     return {
-        'paramset_type': 'unconstrained',
+        'paramset_type': 'constrained_by_normal',
         'n_parameters': d,
         'is_scalar': False,
         'inits': (0.0,) * d,
         'bounds': ((-5.0, 5.0),) * d,
         'fixed': False,
+        'auxdata': (0.0,) * d,
     }
 
 
