@@ -3,11 +3,11 @@
 The modifier uses GP posterior-mean regression to interpolate yield
 corrections across an arbitrary-dimensional nuisance-parameter space.
 
-The alpha parameter is a d-dimensional vector whose coordinates index the
-GP input space.  At each anchor node alpha_i the user supplies a template
-(bin yields for this sample).  The GP posterior mean predicts the
-per-bin yield ratio at any query alpha, and the resulting *additive* delta
-w.r.t. the nominal is returned.
+The alpha parameter is a d-dimensional vector, not a scalar.  
+At each anchor node alpha_i the user supplies a template (bin yields for this sample).  
+This is distinct from the `histosys` schema with `hi_data` and `lo_data`.
+The GP posterior mean predicts the per-bin yield ratio at any query alpha, 
+and the resulting additive delta w.r.t. the nominal is returned.
 
 GP posterior mean for bin b
 ---------------------------
