@@ -1,3 +1,4 @@
+from pyhf.modifiers.gphistosys import gphistosys_builder, gphistosys_combined
 from pyhf.modifiers.histosys import histosys_builder, histosys_combined
 from pyhf.modifiers.lumi import lumi_builder, lumi_combined
 from pyhf.modifiers.normfactor import normfactor_builder, normfactor_combined
@@ -40,6 +41,7 @@ def __dir__():
 
 
 histfactory_set = {
+    "gphistosys": (gphistosys_builder, gphistosys_combined),
     "histosys": (histosys_builder, histosys_combined),
     "lumi": (lumi_builder, lumi_combined),
     "normfactor": (normfactor_builder, normfactor_combined),

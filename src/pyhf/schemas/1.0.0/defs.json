@@ -81,6 +81,7 @@
                     "type": "array",
                     "items": {
                         "anyOf": [
+                            { "$ref": "#/definitions/modifier/gphistosys" },
                             { "$ref": "#/definitions/modifier/histosys" },
                             { "$ref": "#/definitions/modifier/lumi" },
                             { "$ref": "#/definitions/modifier/normfactor" },
@@ -96,6 +97,40 @@
             "additionalProperties": false
         },
         "modifier": {
+            "gphistosys": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "type": { "const": "gphistosys" },
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "nodes": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": { "type": "number" },
+                                    "minItems": 1
+                                },
+                                "minItems": 1
+                            },
+                            "templates": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": { "type": "number" },
+                                    "minItems": 1
+                                },
+                                "minItems": 1
+                            }
+                        },
+                        "required": ["nodes", "templates"],
+                        "additionalProperties": false
+                    }
+                },
+                "required": ["name", "type", "data"],
+                "additionalProperties": false
+            },
             "histosys": {
                 "type": "object",
                 "properties": {
