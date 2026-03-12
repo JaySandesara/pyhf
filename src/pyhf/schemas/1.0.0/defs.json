@@ -122,6 +122,11 @@
                                     "minItems": 1
                                 },
                                 "minItems": 1
+                            },
+                            "labels": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "minItems": 1
                             }
                         },
                         "required": ["nodes", "templates"],
