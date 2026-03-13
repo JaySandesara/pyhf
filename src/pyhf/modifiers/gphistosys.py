@@ -1,47 +1,30 @@
 """Custom pyhf modifier: Gaussian Process interpolation.
 
-The modifier uses GP posterior-mean regression to interpolate yield
-corrections across an arbitrary-dimensional nuisance-parameter space.
-
-Each dimension of the GP input vector is exposed as an individually named,
-scalar constrained_by_normal parameter via the ``"labels"`` field in the
-spec.  For a d-dimensional GP the spec carries one modifier entry with
-d labels; pyhf registers d separate scalar parameters under those names.
-
-    labels[0]  →  pyhf parameter "jet_energy"   (dim 0, carries the delta)
-    labels[1]  →  pyhf parameter "b_tagging"    (dim 1, returns zero)
-    ...
-
-The combined class reassembles the d scalars into the full alpha vector
-before evaluating the GP kernel.  Only the dim-0 (primary) parameter slot
-carries the non-zero delta so that pyhf's addition accumulation is correct.
-
-For d=1, ``"labels"`` defaults to ``[modifier_name]`` — existing 1D specs
-work without change.
+The modifier uses GP posterior-mean regression to interpolate yield corrections across an arbitrary-dimensional nuisance-parameter space.
 
 GP posterior mean for bin b
 ---------------------------
-    ratio_b(alpha) = 1 + k(alpha, X) K^{-1} (r_b - 1)
+    ratio_b(a) = 1 + k(a, A) K^{-1} (r_b - 1)
 
 where
-    X          = anchor nodes  (N x d)
+    A          = anchor nodes  (N x d)
     r_b        = templates[:, b] / nominal_b   (N-vector of ratios at anchors)
-    k(a, X)    = [k(a, x_1), ..., k(a, x_N)]  (row-vector of kernel values)
-    K          = k(X, X) + noise^2 I           (N x N training kernel matrix)
+    K(a, A)    = [k(a, a_1), ..., k(a, a_N)]  (row-vector of kernel values)
+    K          = K(A, A) + noise^2 I           (N x N training kernel matrix)
 
 Squared-exponential (RBF) kernel:
     k(a, a') = variance * exp(-||a - a'||^2 / (2 * length_scale^2))
 
-Additive delta:
-    delta_b(alpha) = nominal_b * k(alpha, X) K^{-1} (r_b - 1)
+Multiplicative kappa:
+    kappa_b(a) = 1.0 + K(a, A) K^{-1} (r_b - 1)
 
-Spec format
------------
+Spec format example
+-------------------
 {
-    "name": "gp_sys",
+    "name": "alpha",
     "type": "gphistosys",
     "data": {
-        "nodes":     [[0,0], [1,0], [-1,0], [0,1], [0,-1]],
+        "nodes":     [[0.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0 , -1.0]],
         "templates": [
             [t0_bin0, t0_bin1, ...],
             ...
@@ -66,10 +49,24 @@ Typical sample structure
     "name":  "background",
     "data":  [100.0, 150.0],
     "modifiers": [
-        {"name": "gp_sys", "type": "gphistosys", "data": {...}},
+        {"name": "alpha", "type": "gphistosys", "data": {...}},
         {"name": "mu",     "type": "normfactor",  "data": null}
     ]
 }
+
+Implementation detail
+---------------------
+
+Each dimension of the GP input vector is exposed as an individually named, scalar constrained_by_normal parameter via the ``"labels"`` field in the spec.  For a d-dimensional GP the spec carries one modifier entry with d labels; pyhf registers d separate scalar parameters under those names.
+
+    labels[0]  ->  pyhf parameter "jet_energy"   (dim 0, carries the kappa)
+    labels[1]  ->  pyhf parameter "b_tagging"    (dim 1, returns one)
+    ...
+
+The combined class reassembles the d scalars put into the labels field into the full alpha vector before evaluating the GP kernel.
+
+For d=1, ``"labels"`` defaults to ``[modifier_name]`` — existing 1D specs
+work without change.
 """
 
 import logging
@@ -203,6 +200,16 @@ class gphistosys_builder:
                 )
                 nodes = [[0.0]]
             nodes_arr = np.array(nodes, dtype=float)  # (N, d)
+
+            # Ensure the origin node (alpha=0) is always present so the GP
+            # exactly recovers the nominal yield at the default parameter value.
+            # Done once here (outside the sample loop) since nodes are shared.
+            zero_node = np.zeros(nodes_arr.shape[1], dtype=float)
+            insert_origin = not any(
+                np.allclose(nodes_arr[i], zero_node) for i in range(len(nodes_arr))
+            )
+            if insert_origin:
+                nodes_arr = np.vstack([zero_node[None, :], nodes_arr])
             N = len(nodes_arr)
 
             for sample_name, sample in self.builder_data[key].items():
@@ -220,13 +227,17 @@ class gphistosys_builder:
 
                 full_templates = np.zeros((N, n_total_bins), dtype=float)
                 ptr = 0
+                # If origin was inserted, reserve row 0 for nom; user nodes start at 1
+                row_offset = 1 if insert_origin else 0
+                if insert_origin:
+                    full_templates[0, :] = nom_flat
                 for ct, nm in zip(data['channel_templates'], data['nom_data']):
                     n_bins_c = len(nm)
                     if ct is not None:
-                        full_templates[:, ptr : ptr + n_bins_c] = ct
+                        full_templates[row_offset:, ptr : ptr + n_bins_c] = ct
                     else:
                         nom_c = np.array(nm, dtype=float)
-                        full_templates[:, ptr : ptr + n_bins_c] = nom_c[None, :]
+                        full_templates[row_offset:, ptr : ptr + n_bins_c] = nom_c[None, :]
                     ptr += n_bins_c
 
                 sample['data'] = {
@@ -253,10 +264,6 @@ class gphistosys_combined:
     their source modifier via ``builder_data[key]['__labels__']``, assembles
     the full alpha vector, and evaluates the GP.
 
-    Only the dim-0 (primary) label slot returns a non-zero delta; the
-    remaining slots return zero so that pyhf's addition accumulation is
-    correct.
-
     Parameters
     ----------
     modifiers    : list of (spec_name, 'gphistosys') tuples — spec modifier names
@@ -268,8 +275,8 @@ class gphistosys_combined:
     batch_size   : vectorised batch dimension, or None
     """
 
-    name = 'gphistosys'
-    op_code = 'addition'
+    name    = 'gphistosys'
+    op_code = 'multiplication'
 
     def __init__(
         self,
@@ -278,7 +285,7 @@ class gphistosys_combined:
         builder_data,
         length_scale=1.0,
         variance=1.0,
-        noise=1e-6,
+        noise=0.0,
         batch_size=None,
     ):
         self.batch_size = batch_size
@@ -316,14 +323,12 @@ class gphistosys_combined:
         # ------------------------------------------------------------------
         # Precompute GP weights (done once at build time).
         # ------------------------------------------------------------------
-        self._gp_meta = []      # one entry per unique GP (builder key)
-        self._key_labels = []   # ordered labels per GP
-        self._primary_labels = []  # dim-0 label per GP (carries the delta)
+        self._gp_meta           = [] # one entry per unique GP (builder key)
+        self._key_labels        = [] # ordered labels per GP
 
         for bkey in keys:
             labels_for_key = key_to_labels[bkey]
             self._key_labels.append(labels_for_key)
-            self._primary_labels.append(labels_for_key[0])
 
             first_sample = pdfconfig.samples[0]
             anchor_alphas = np.array(
@@ -337,7 +342,7 @@ class gphistosys_combined:
             K_train += (self.noise ** 2) * np.eye(N)
             K_train_inv = np.linalg.inv(K_train)
 
-            weights_per_sample, nom_per_sample = [], []
+            weights_per_sample = []
             for s in pdfconfig.samples:
                 sdata = builder_data[bkey][s]['data']
                 nom = np.array(sdata['nom_data'], dtype=float)
@@ -349,13 +354,11 @@ class gphistosys_combined:
                         np.ones_like(templates),
                     )
                 weights_per_sample.append(K_train_inv @ (anchor_ratios - 1.0))
-                nom_per_sample.append(nom)
 
             self._gp_meta.append(
                 {
                     'anchor_alphas': anchor_alphas,
                     'weights': weights_per_sample,
-                    'nom_data': nom_per_sample,
                 }
             )
 
@@ -371,7 +374,7 @@ class gphistosys_combined:
                 _access_field[pv_idx, b] = int(sel[0])
         self._access_field = _access_field
 
-        # Map label → pv_idx for fast lookup in apply().
+        # Map label -> pv_idx for fast lookup in apply().
         self._label_to_pv_idx = {lbl: i for i, lbl in enumerate(all_labels)}
 
         # Mask: one entry per incoming label (n_labels, n_samples, 1, n_bins).
@@ -385,7 +388,7 @@ class gphistosys_combined:
                     [[builder_data[bkey][s]['data']['mask']] for s in pdfconfig.samples]
                 )
             else:
-                # Satellite slots always output zero — use all-False mask.
+                # Satellite slots always output ones — use all-False mask.
                 n_bins = len(builder_data[bkey][pdfconfig.samples[0]]['data']['mask'])
                 self._gphistosys_mask.append(
                     [[([False] * n_bins)] for _ in pdfconfig.samples]
@@ -403,7 +406,7 @@ class gphistosys_combined:
         self.gphistosys_mask = tensorlib.astensor(
             self._gphistosys_mask, dtype='bool'
         )
-        self.gphistosys_default = tensorlib.zeros(
+        self.gphistosys_default = tensorlib.ones(
             tensorlib.shape(self.gphistosys_mask)
         )
         self.access_field = tensorlib.astensor(self._access_field, dtype='int')
@@ -414,24 +417,20 @@ class gphistosys_combined:
         self._weights_t = [
             [tensorlib.astensor(w) for w in d['weights']] for d in self._gp_meta
         ]
-        self._nom_data_t = [
-            [tensorlib.astensor(n) for n in d['nom_data']] for d in self._gp_meta
-        ]
 
     # ------------------------------------------------------------------
-    def _gp_delta(self, alpha, anchor_alphas, weights, nom, tensorlib):
-        """GP posterior-mean additive delta for one (GP, sample, batch) triple.
+    def _gp_factor(self, alpha, anchor_alphas, weights, tensorlib):
+        """GP posterior-mean multiplicative factor for (GP, sample, batch).
 
         Parameters
         ----------
         alpha        : (d,)
         anchor_alphas: (N, d)
         weights      : (N, n_bins)  — precomputed K^{-1}(r - 1)
-        nom          : (n_bins,)
 
         Returns
         -------
-        delta : (n_bins,)
+        factor : (n_bins,)
         """
         diff = anchor_alphas - alpha
         sq_dist = tensorlib.einsum('nd,nd->n', diff, diff)
@@ -439,18 +438,18 @@ class gphistosys_combined:
             -0.5 * sq_dist / (self.length_scale ** 2)
         )
         delta_ratio = tensorlib.einsum('n,nb->b', K_eval, weights)
-        return nom * delta_ratio
+        return 1.0 + delta_ratio
 
     # ------------------------------------------------------------------
     def apply(self, pars):
-        """Compute additive yield deltas.
+        """Compute multiplicative correction factors.
 
         Returns
         -------
         tensor : shape (n_labels, n_samples, batch_or_1, n_global_bins)
 
-        Only the primary label (dim 0) of each GP carries a non-zero delta.
-        Satellite labels return zeros, ensuring pyhf's summation is correct.
+        Only the primary label (dim 0) of each GP carries a non-ones kappa.
+        Satellite labels return ones.
         """
         if not self.param_viewer.index_selection:
             return
@@ -458,14 +457,12 @@ class gphistosys_combined:
         tensorlib, _ = get_backend()
         flat_pars = tensorlib.reshape(pars, (-1,))
 
-        n_labels = len(self._label_to_pv_idx)
         n_samples = len(self._weights_t[0]) if self._gp_meta else 0
 
         # Precompute GP delta for each unique GP × batch × sample.
         # gp_deltas[gp_idx][b_idx][s_idx] = (n_bins,) tensor
         gp_deltas = []
         for gp_idx, gp_labels in enumerate(self._key_labels):
-            d = len(gp_labels)
             batch_deltas = []
             for b in range(self._effective_batch):
                 # Assemble d-dimensional alpha vector from individual scalars.
@@ -481,11 +478,10 @@ class gphistosys_combined:
                 alpha = tensorlib.stack(alpha_components)  # (d,)
 
                 sample_deltas = [
-                    self._gp_delta(
+                    self._gp_factor(
                         alpha,
                         self._anchor_alphas_t[gp_idx],
                         self._weights_t[gp_idx][s_idx],
-                        self._nom_data_t[gp_idx][s_idx],
                         tensorlib,
                     )
                     for s_idx in range(n_samples)
@@ -503,7 +499,7 @@ class gphistosys_combined:
             dim_idx = self._key_labels[gp_idx].index(lbl)
 
             if dim_idx == 0:
-                # Primary: stack (batch, n_samples, n_bins) → (n_samples, batch, n_bins)
+                # Primary: stack (batch, n_samples, n_bins) -> (n_samples, batch, n_bins)
                 batch_stack = tensorlib.stack(
                     [tensorlib.stack(gp_deltas[gp_idx][b]) for b in range(self._effective_batch)]
                 )  # (batch, n_samples, n_bins)
@@ -511,16 +507,16 @@ class gphistosys_combined:
                     tensorlib.einsum('bsn->sbn', batch_stack)
                 )  # (n_samples, batch, n_bins)
             else:
-                # Satellite: zeros with same shape.
+                # Satellite: ones with same shape.
                 results_by_label.append(
-                    tensorlib.zeros(
+                    tensorlib.ones(
                         tensorlib.shape(results_by_label[
                             self._label_to_pv_idx[self._key_labels[gp_idx][0]]
                         ])
                     )
                 )
 
-        # Stack → (n_labels, n_samples, batch, n_bins)
+        # Stack -> (n_labels, n_samples, batch, n_bins)
         results = tensorlib.stack(results_by_label)
         results = tensorlib.where(
             self.gphistosys_mask, results, self.gphistosys_default
