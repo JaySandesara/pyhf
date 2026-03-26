@@ -57,16 +57,18 @@ Typical sample structure
 Implementation detail
 ---------------------
 
-Each dimension of the GP input vector is exposed as an individually named, scalar constrained_by_normal parameter via the ``"labels"`` field in the spec.  For a d-dimensional GP the spec carries one modifier entry with d labels; pyhf registers d separate scalar parameters under those names.
+The challenge here was that we do interpolation with a vector alpha = (alpha_1, ... alpha_d), but each alpha_i is an independent parameter. But pyhf's parameter system indexes parameters by ``name``.  A d-dimensional GP input vector therefore cannot be registered as a single named entity and still expose its individual dimensions to pull plots, fit tables, and profile scans.
 
-    labels[0]  ->  pyhf parameter "jet_energy"   (dim 0, carries the kappa)
-    labels[1]  ->  pyhf parameter "b_tagging"    (dim 1, returns one)
+The workaround proposed here is that each dimension of the GP input vector is exposed as an individually named, scalar constrained_by_normal parameter via the ``labels`` field in the spec.  For a d-dimensional GP the spec carries one modifier entry with d labels; pyhf registers d separate scalar parameters under those names.
+
+    labels[0]  ->  pyhf parameter "alpha_1"    (dim 0, carries the kappa)
+    labels[1]  ->  pyhf parameter "alpha_2"    (dim 1, returns one)
     ...
+    labels[d]  ->  pyhf parameter "alpha_d"    (dim 1, returns one)
 
 The combined class reassembles the d scalars put into the labels field into the full alpha vector before evaluating the GP kernel.
 
-For d=1, ``"labels"`` defaults to ``[modifier_name]`` — existing 1D specs
-work without change.
+For d=1, `labels` defaults to ``[modifier_name]`` — existing 1D specs work without change.
 """
 
 import logging
@@ -96,13 +98,8 @@ def _get_labels(modifier_name, modifier_data):
     return list(modifier_data.get('labels', [modifier_name]))
 
 
-# ---------------------------------------------------------------------------
-# required_parset  —  always scalar, called once per label
-# ---------------------------------------------------------------------------
-
-
 def required_parset(sample_data, modifier_data):
-    """Return a scalar constrained_by_normal parset for one GP dimension."""
+    """Return a scalar constrained_by_normal parset for a single GP dimension."""
     return {
         'paramset_type': 'constrained_by_normal',
         'n_parameters': 1,
@@ -112,11 +109,6 @@ def required_parset(sample_data, modifier_data):
         'fixed': False,
         'auxdata': (0.0,),
     }
-
-
-# ---------------------------------------------------------------------------
-# Builder
-# ---------------------------------------------------------------------------
 
 
 class gphistosys_builder:
@@ -201,9 +193,7 @@ class gphistosys_builder:
                 nodes = [[0.0]]
             nodes_arr = np.array(nodes, dtype=float)  # (N, d)
 
-            # Ensure the origin node (alpha=0) is always present so the GP
-            # exactly recovers the nominal yield at the default parameter value.
-            # Done once here (outside the sample loop) since nodes are shared.
+            # Ensure the origin node (alpha=0) is present
             zero_node = np.zeros(nodes_arr.shape[1], dtype=float)
             insert_origin = not any(
                 np.allclose(nodes_arr[i], zero_node) for i in range(len(nodes_arr))
@@ -258,9 +248,9 @@ class gphistosys_builder:
 class gphistosys_combined:
     """Combined modifier class for GP-based histogram interpolation.
 
-    The ``"labels"`` field in the spec maps each GP dimension to a named
+    The `labels` field in the spec maps each GP dimension to a named
     scalar pyhf parameter.  The combined class receives all labeled
-    parameters (e.g. ``"jet_energy"``, ``"b_tagging"``), maps them back to
+    parameters (e.g. "jet_energy", "b_tagging"), maps them back to
     their source modifier via ``builder_data[key]['__labels__']``, assembles
     the full alpha vector, and evaluates the GP.
 
@@ -293,14 +283,12 @@ class gphistosys_combined:
         self.variance = float(variance)
         self.noise = float(noise)
 
-        # pyhf passes spec modifier names (e.g. "gp_sys"), NOT label names.
         # Derive the per-dimension label names from builder_data.__labels__,
         # which the builder stored when it processed the spec.
-        # keys: ["gphistosys/gp_sys", ...]
         keys = [f'{mtype}/{m}' for m, mtype in modifiers]
 
         # For each spec key, read its labels; build a flat ordered list.
-        # key_to_labels["gphistosys/gp_sys"] = ["alpha1", "alpha2"]
+        # e.g. key_to_labels["gphistosys/alpha"] = ["alpha1", "alpha2"]
         key_to_labels = {}
         for key in keys:
             spec_name = key.split('/')[1]
