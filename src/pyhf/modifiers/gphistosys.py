@@ -7,16 +7,17 @@ GP posterior mean for bin b (with HistFactory prior)
     kappa_b(a) = m_b(a) + k(a, A) K^{-1} (r_b - m_b(A))
 
 where
-    m_b(a)     = prod_i (1 + delta_i(a_i, b) / nom_b)   factorized HistFactory prior
-    delta_i    = code4p interpolation (pyhf.interpolators.code4p) for dimension i
+    m_b(a)     = prod_i ratio_i(a_i, b)          factorized HistFactory prior
+    ratio_i    = code4 interpolation (pyhf.interpolators.code4) for dimension i
     A          = anchor nodes  (N x d)
     r_b        = templates[:, b] / nominal_b   (N-vector of ratios at anchors)
     k(a, A)    = [k(a, a_1), ..., k(a, a_N)]  (row-vector of kernel values)
     K          = K(A, A) + noise^2 I           (N x N training kernel matrix)
 
-The hi/lo templates per dimension are extracted from axis-aligned ±1 nodes.
-The code4p interpolation is reused from pyhf.interpolators.code4p for exact
-consistency with histosys.
+The hi/lo templates per dimension are extracted from axis-aligned \pm 1 nodes.
+The code4 interpolation (multiplicative; polynomial inside |a| < 1, exponential
+extrapolation outside) is reused from pyhf.interpolators.code4 — the natural fit
+for this modifier's multiplicative op_code.
 
 Squared-exponential (RBF) kernel:
     k(a, a') = variance * exp(-||a - a'||^2 / (2 * length_scale^2))
@@ -60,9 +61,8 @@ Typical sample structure
 Implementation detail
 ---------------------
 
-The challenge here was that we do interpolation with a vector alpha = (alpha_1, ... alpha_d), but each alpha_i is an independent parameter. But pyhf's parameter system indexes parameters by ``name``.  A d-dimensional GP input vector therefore cannot be registered as a single named entity and still expose its individual dimensions to pull plots, fit tables, and profile scans.
-
-The workaround proposed here is that each dimension of the GP input vector is exposed as an individually named, scalar constrained_by_normal parameter via the ``labels`` field in the spec.  For a d-dimensional GP the spec carries one modifier entry with d labels; pyhf registers d separate scalar parameters under those names.
+Each dimension of the GP input vector is exposed as an individually named, scalar constrained_by_normal parameter via the ``labels`` field in the spec.  
+For a d-dimensional GP the spec carries one modifier entry with d labels; pyhf registers d separate scalar parameters under those names.
 
     labels[0]  ->  pyhf parameter "alpha_1"    (dim 0, carries the kappa)
     labels[1]  ->  pyhf parameter "alpha_2"    (dim 1, returns one)
@@ -80,7 +80,7 @@ import numpy as np
 import pyhf
 from pyhf import get_backend, events
 from pyhf.parameters import ParamViewer
-from pyhf.interpolators.code4p import _slow_code4p, code4p
+from pyhf.interpolators.code4 import _slow_code4, code4
 
 log = logging.getLogger(__name__)
 
@@ -107,13 +107,16 @@ def _find_axis_node(nodes, dim, value):
     return None
 
 
-_code4p_summand = _slow_code4p.__new__(_slow_code4p).summand
+_code4_inst = _slow_code4.__new__(_slow_code4)
+_code4_inst.alpha0 = 1
+_code4_product = _code4_inst.product
 
 
 def _histosys_prior_at_nodes(anchor_alphas, nom, lo_templates, hi_templates):
-    """Factorized code4p prior m(X_j) = prod_i (1 + delta_i/nom) at each training node.
+    """Factorized code4 prior m(X_j) = prod_i ratio_i at each training node.
 
-    Uses pyhf's _slow_code4p.summand for exact consistency with histosys code4p.
+    Uses pyhf's _slow_code4.product for exact consistency with the multiplicative
+    code4 interpolation evaluated at inference.
 
     Parameters
     ----------
@@ -133,8 +136,12 @@ def _histosys_prior_at_nodes(anchor_alphas, nom, lo_templates, hi_templates):
         for j in range(N):
             a_i = anchor_alphas[j, dim]
             for b in range(n_bins):
-                delta = _code4p_summand(lo_templates[dim][b], nom[b], hi_templates[dim][b], a_i)
-                ratio = 1.0 + delta / nom[b] if nom[b] != 0 else 1.0
+                if nom[b] != 0:
+                    ratio = _code4_product(
+                        lo_templates[dim][b], nom[b], hi_templates[dim][b], a_i
+                    )
+                else:
+                    ratio = 1.0
                 prior[j, b] *= ratio
     return prior
 
@@ -380,7 +387,7 @@ class gphistosys_combined:
             K_train_inv = np.linalg.inv(K_train)
 
             weights_per_sample = []
-            # histogramssets for code4p: (d, n_samples, 3, n_bins)
+            # histogramssets for code4: (d, n_samples, 3, n_bins)
             # Axis 2 = [lo_template, nom, hi_template] per dimension.
             histogramssets_list = [[] for _ in range(d)]
 
@@ -398,16 +405,26 @@ class gphistosys_combined:
                 lo_templates = [templates[lo_node_idx[dim]] for dim in range(d)]
                 hi_templates = [templates[hi_node_idx[dim]] for dim in range(d)]
 
+                # code4 divides up/nom and down/nom internally; sanitize nom == 0
+                # bins so the produced ratio is exactly 1 there (no correction).
+                nom_safe = np.where(nom == 0, 1.0, nom)
+                lo_safe = [
+                    np.where(nom == 0, nom_safe, lo_templates[dim]) for dim in range(d)
+                ]
+                hi_safe = [
+                    np.where(nom == 0, nom_safe, hi_templates[dim]) for dim in range(d)
+                ]
+
                 for dim in range(d):
                     histogramssets_list[dim].append(
-                        [lo_templates[dim], nom, hi_templates[dim]]
+                        [lo_safe[dim], nom_safe, hi_safe[dim]]
                     )
 
-                # GP models the residual between true ratios and code4p prior.
+                # GP models the residual between true ratios and code4 prior.
                 prior_at_nodes = _histosys_prior_at_nodes(anchor_alphas, nom, lo_templates, hi_templates)
                 weights_per_sample.append(K_train_inv @ (anchor_ratios - prior_at_nodes))
 
-            # Shape: (d, n_samples, 3, n_bins) — what code4p expects.
+            # Shape: (d, n_samples, 3, n_bins) — what code4 expects.
             histogramssets = np.array(histogramssets_list, dtype=float)
 
             self._gp_meta.append({
@@ -469,21 +486,17 @@ class gphistosys_combined:
         self._weights_t = [
             [tensorlib.astensor(w) for w in d['weights']] for d in self._gp_meta
         ]
-        # Instantiate pyhf's vectorized code4p interpolator per GP.
-        # Each handles all d dimensions × n_samples in one call.
-        self._code4p_interps = [
-            code4p(d['histogramssets'], subscribe=False) for d in self._gp_meta
-        ]
-        # Nominal yields per GP per sample for delta→ratio conversion.
-        self._nom_t = [
-            [tensorlib.astensor(d['histogramssets'][0, s_idx, 1])
-             for s_idx in range(d['histogramssets'].shape[1])]
+        # Instantiate pyhf's vectorized code4 interpolator per GP.
+        # Each handles all d dimensions × n_samples in one call and returns
+        # multiplicative ratios (no delta→ratio conversion needed downstream).
+        self._code4_interps = [
+            code4(d['histogramssets'], subscribe=False, alpha0=1.0)
             for d in self._gp_meta
         ]
 
     # ------------------------------------------------------------------
-    def _gp_factor(self, alpha, anchor_alphas, weights, code4p_interp, nom, s_idx, tensorlib):
-        """GP posterior-mean multiplicative kappa with code4p HistFactory prior.
+    def _gp_factor(self, alpha, anchor_alphas, weights, code4_interp, s_idx, tensorlib):
+        """GP posterior-mean multiplicative kappa with code4 HistFactory prior.
 
         kappa_b(a) = m_b(a) + k(a,X) K^{-1} (r_b - m_b(X))
 
@@ -492,9 +505,8 @@ class gphistosys_combined:
         alpha         : (d,)
         anchor_alphas : (N, d)
         weights       : (N, n_bins)  — precomputed K^{-1}(r - m(X))
-        code4p_interp : pyhf.interpolators.code4p instance — (d, n_samples, 3, n_bins)
-        nom           : (n_bins,) tensor — nominal yields for this sample
-        s_idx         : int — sample index into code4p's sample axis
+        code4_interp  : pyhf.interpolators.code4 instance — (d, n_samples, 3, n_bins)
+        s_idx         : int — sample index into code4's sample axis
 
         Returns
         -------
@@ -502,21 +514,18 @@ class gphistosys_combined:
         """
         d = tensorlib.shape(alpha)[0]
 
-        # Evaluate the vectorized code4p interpolator.
+        # Evaluate the vectorized code4 interpolator.
         # alphasets shape: (d, 1) — one alpha per dimension, one "batch" entry.
         alphasets = tensorlib.reshape(alpha, (d, 1))
-        # code4p returns additive deltas: (d, n_samples, 1, n_bins)
-        all_deltas = code4p_interp(alphasets)
+        # code4 returns multiplicative ratios: (d, n_samples, 1, n_bins)
+        all_ratios = code4_interp(alphasets)
 
-        # Extract delta for this sample: (d, n_bins) and convert to ratio.
-        # Factorized prior: m(a) = prod_i (1 + delta_i / nom)
+        # Factorized prior: m(a) = prod_i ratio_i
         prior = 1.0
         for i in range(d):
-            delta_i = all_deltas[i, s_idx, 0]  # (n_bins,)
-            ratio_i = tensorlib.where(nom != 0, 1.0 + delta_i / nom, 1.0)
-            prior = prior * ratio_i
+            prior = prior * all_ratios[i, s_idx, 0]
 
-        # GP residual correction on top of code4p prior
+        # GP residual correction on top of code4 prior
         diff = anchor_alphas - alpha
         sq_dist = tensorlib.einsum('nd,nd->n', diff, diff)
         K_eval = self.variance * tensorlib.exp(
@@ -567,8 +576,7 @@ class gphistosys_combined:
                         alpha,
                         self._anchor_alphas_t[gp_idx],
                         self._weights_t[gp_idx][s_idx],
-                        self._code4p_interps[gp_idx],
-                        self._nom_t[gp_idx][s_idx],
+                        self._code4_interps[gp_idx],
                         s_idx,
                         tensorlib,
                     )

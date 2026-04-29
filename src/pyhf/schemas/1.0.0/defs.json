@@ -82,6 +82,7 @@
                     "items": {
                         "anyOf": [
                             { "$ref": "#/definitions/modifier/gphistosys" },
+                            { "$ref": "#/definitions/modifier/gphistosys_additive" },
                             { "$ref": "#/definitions/modifier/histosys" },
                             { "$ref": "#/definitions/modifier/lumi" },
                             { "$ref": "#/definitions/modifier/normfactor" },
@@ -102,6 +103,45 @@
                 "properties": {
                     "name": { "type": "string" },
                     "type": { "const": "gphistosys" },
+                    "data": {
+                        "type": "object",
+                        "properties": {
+                            "nodes": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": { "type": "number" },
+                                    "minItems": 1
+                                },
+                                "minItems": 1
+                            },
+                            "templates": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": { "type": "number" },
+                                    "minItems": 1
+                                },
+                                "minItems": 1
+                            },
+                            "labels": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "minItems": 1
+                            }
+                        },
+                        "required": ["nodes", "templates"],
+                        "additionalProperties": false
+                    }
+                },
+                "required": ["name", "type", "data"],
+                "additionalProperties": false
+            },
+            "gphistosys_additive": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "type": { "const": "gphistosys_additive" },
                     "data": {
                         "type": "object",
                         "properties": {

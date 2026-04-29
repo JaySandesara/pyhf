@@ -131,6 +131,9 @@ class _slow_code4p:
                 S + alpha * A * (15 + alpha * alpha * (-10 + alpha * alpha * 3))
             )
         return delta
+    # def factor(self, down, nom, up, alpha):
+    #     ratio_up = up / nom
+    #     ratio_down = down / nom
 
     def __init__(self, histogramssets, subscribe=True):
         self._histogramssets = histogramssets
