@@ -19,17 +19,56 @@ where
 The modifier output is summed into the per-sample yield by pyhf:
     yield = nominal + sum_modifiers delta_b(a)
 
-Spec format is identical to ``gphistosys`` apart from the type string:
-
-    {
-        "name": "alpha",
-        "type": "gphistosys_additive",
-        "data": {
-            "nodes":     [[0.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0 , -1.0]],
-            "templates": [...],
-            "labels":    ["jet_energy", "b_tagging"]
-        }
+Spec format example
+-------------------
+{
+    "name": "alpha",
+    "type": "gphistosys",
+    "data": {
+        "nodes":     [[0.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0 , -1.0]],
+        "templates": [
+            [t0_bin0, t0_bin1, ...],
+            ...
+        ],
+        "labels": ["jet_energy", "b_tagging"]
     }
+}
+
+For d=1 the "labels" field is optional and defaults to [modifier_name]:
+{
+    "name": "alpha",
+    "type": "gphistosys",
+    "data": {
+        "nodes":     [[-1.0], [0.0], [1.0]],
+        "templates": [[...], [...], [...]]
+    }
+}
+
+Typical sample structure
+------------------------
+{
+    "name":  "background",
+    "data":  [100.0, 150.0],
+    "modifiers": [
+        {"name": "alpha", "type": "gphistosys", "data": {...}},
+        {"name": "mu",     "type": "normfactor",  "data": null}
+    ]
+}
+
+Implementation detail
+---------------------
+
+Each dimension of the GP input vector is exposed as an individually named, scalar constrained_by_normal parameter via the ``labels`` field in the spec.  
+For a d-dimensional GP the spec carries one modifier entry with d labels; pyhf registers d separate scalar parameters under those names.
+
+    labels[0]  ->  pyhf parameter "alpha_1"    (dim 0, carries the kappa)
+    labels[1]  ->  pyhf parameter "alpha_2"    (dim 1, returns one)
+    ...
+    labels[d]  ->  pyhf parameter "alpha_d"    (dim 1, returns one)
+
+The combined class reassembles the d scalars put into the labels field into the full alpha vector before evaluating the GP kernel.
+
+For d=1, `labels` defaults to ``[modifier_name]`` — existing 1D specs work without change.
 """
 
 import logging
